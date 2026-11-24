@@ -33,7 +33,7 @@ jobs:
       - name: Run baseline examples
         run: |
           mkdir -p results/baseline results/candidate
-          export G4DATASEARCHPATH="$RUNNER_TEMP/g4data"
+          export G4DATASEARCHPATH="$PWD/build/data"
           sed 's@/run/beamOn 100000@/run/beamOn 10000@' em5/bichsel.mac > "$RUNNER_TEMP/bichsel-smoke.mac"
           printf '/random/setSeeds 12345 67890\n' > "$RUNNER_TEMP/seeded.mac"
           cat "$RUNNER_TEMP/bichsel-smoke.mac" >> "$RUNNER_TEMP/seeded.mac"
@@ -51,7 +51,7 @@ jobs:
           cmake --build em0 --parallel 4
       - name: Run candidate examples
         run: |
-          export G4DATASEARCHPATH="$RUNNER_TEMP/g4data"
+          export G4DATASEARCHPATH="$PWD/build/data"
           cd em5
           ./TestEm5 "$RUNNER_TEMP/seeded.mac" > ../results/candidate/bichsel.log 2>&1
           ./TestEm5 dedx1.mac > ../results/candidate/dedx1.log 2>&1
