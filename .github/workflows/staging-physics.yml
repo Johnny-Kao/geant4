@@ -1,0 +1,83 @@
+name: Staging full toolkit and electromagnetic example
+on:
+  push:
+    branches: [validation/spline-correction]
+    paths: ['.github/workflows/staging-physics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  example:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check clean patch and configure baseline
+        run: |
+          git diff --check f3d5293d384757b8a228a099898b2b87cfa4023c HEAD -- source
+          file=source/global/management/src/G4PhysicsVector.cc
+          cp "$file" "$RUNNER_TEMP/patched.cc"
+          git show f3d5293d384757b8a228a099898b2b87cfa4023c:"$file" > "$file"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGEANT4_BUILD_MULTITHREADED=OFF -DGEANT4_INSTALL_DATA=ON -DGEANT4_INSTALL_DATADIR="$RUNNER_TEMP/g4data" -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/g4install"
+          df -h .
+      - name: Build complete baseline toolkit
+        run: cmake --build build --parallel 4
+      - name: Build upstream TestEm5 and TestEm0
+        run: |
+          cmake -S examples/extended/electromagnetic/TestEm5 -B em5 -DGeant4_DIR="$PWD/build" -DWITH_GEANT4_UIVIS=OFF
+          cmake --build em5 --parallel 4
+          cmake -S examples/extended/electromagnetic/TestEm0 -B em0 -DGeant4_DIR="$PWD/build"
+          cmake --build em0 --parallel 4
+      - name: Run baseline examples
+        run: |
+          mkdir -p results/baseline results/candidate
+          export G4DATASEARCHPATH="$RUNNER_TEMP/g4data"
+          sed 's@/run/beamOn 100000@/run/beamOn 10000@' em5/bichsel.mac > "$RUNNER_TEMP/bichsel-smoke.mac"
+          printf '/random/setSeeds 12345 67890\n' > "$RUNNER_TEMP/seeded.mac"
+          cat "$RUNNER_TEMP/bichsel-smoke.mac" >> "$RUNNER_TEMP/seeded.mac"
+          cd em5
+          ./TestEm5 "$RUNNER_TEMP/seeded.mac" > ../results/baseline/bichsel.log 2>&1
+          ./TestEm5 dedx1.mac > ../results/baseline/dedx1.log 2>&1
+          cd ../em0
+          ./TestEm0 TestEm0.in > ../results/baseline/TestEm0.log 2>&1
+          ./DirectAccess > ../results/baseline/DirectAccess.log 2>&1
+      - name: Build complete candidate toolkit
+        run: |
+          cp "$RUNNER_TEMP/patched.cc" source/global/management/src/G4PhysicsVector.cc
+          cmake --build build --parallel 4
+          cmake --build em5 --parallel 4
+          cmake --build em0 --parallel 4
+      - name: Run candidate examples
+        run: |
+          export G4DATASEARCHPATH="$RUNNER_TEMP/g4data"
+          cd em5
+          ./TestEm5 "$RUNNER_TEMP/seeded.mac" > ../results/candidate/bichsel.log 2>&1
+          ./TestEm5 dedx1.mac > ../results/candidate/dedx1.log 2>&1
+          cd ../em0
+          ./TestEm0 TestEm0.in > ../results/candidate/TestEm0.log 2>&1
+          ./DirectAccess > ../results/candidate/DirectAccess.log 2>&1
+      - name: Check outputs and report differences
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for name in ("bichsel","dedx1","TestEm0","DirectAccess"):
+              a,b=[Path("results",v,name+".log").read_text() for v in ("baseline","candidate")]
+              assert a.strip() and b.strip()
+              for tag,t in (("baseline",a),("candidate",b)):
+                  assert not re.search(r'Fatal Exception|G4Exception-START.*Fatal|segmentation fault|COMMAND NOT FOUND',t,re.I), (tag,name)
+              print("EXAMPLE",name,"completed baseline and candidate; log lines",len(a.splitlines()),len(b.splitlines()))
+              if name=="bichsel":
+                  for tag,t in (("baseline",a),("candidate",b)):
+                      for line in t.splitlines():
+                          if re.search(r'energy deposit|transmitted|reflected|energy balance|track length',line,re.I):
+                              print(tag,line)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: electromagnetic-example-logs
+          path: results/
+          if-no-files-found: ignore
