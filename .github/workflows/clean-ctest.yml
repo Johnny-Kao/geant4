@@ -1,0 +1,67 @@
+name: Clean staging CTest and style
+on:
+  push:
+    branches: [validation/spline-ready]
+    paths: ['.github/workflows/clean-ctest.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+            config: Release
+          - os: macos-15
+            cc: clang
+            cxx: clang++
+            config: Debug
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact patch and format
+        shell: bash
+        run: |
+          git diff --check f3d5293d384757b8a228a099898b2b87cfa4023c HEAD -- source tests
+          git diff --exit-code f1dd66a0132e79b0fd1aa8cf62db5cee8e42e775 HEAD -- source tests
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y clang-format-18
+            test=tests/ctests_source/global/management/physics-vector-spline/testPhysicsVectorSpline.cc
+            src=source/global/management/src/G4PhysicsVector.cc
+            clang-format-18 "$test" | diff -u "$test" -
+            clang-format-18 -lines=311:420 "$src" | diff -u "$src" -
+          fi
+      - name: Register native unit test and configure baseline
+        shell: bash
+        run: |
+          file=source/global/management/src/G4PhysicsVector.cc
+          cp "$file" "$RUNNER_TEMP/patched.cc"
+          git show f3d5293d384757b8a228a099898b2b87cfa4023c:"$file" > "$file"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DGEANT4_ENABLE_TESTING=ON -DGEANT4_INSTALL_DATA=OFF
+          cmake --build build --target testPhysicsVectorSpline --parallel 3
+      - name: Baseline must fail the focused CTest
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -R '^testPhysicsVectorSpline$' --output-on-failure | tee "$RUNNER_TEMP/red.txt"
+          rc=${PIPESTATUS[0]}
+          set -e
+          test "$rc" -eq 8
+          grep -q 'Spline type' "$RUNNER_TEMP/red.txt"
+      - name: Candidate must pass the focused CTest
+        shell: bash
+        run: |
+          cp "$RUNNER_TEMP/patched.cc" source/global/management/src/G4PhysicsVector.cc
+          cmake --build build --target testPhysicsVectorSpline --parallel 3
+          ctest --test-dir build -R '^testPhysicsVectorSpline$' --output-on-failure --no-tests=error
